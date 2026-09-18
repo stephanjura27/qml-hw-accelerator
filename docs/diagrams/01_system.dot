@@ -1,0 +1,81 @@
+// ===========================================================================
+//  QML Hardware Accelerator - top-level RTL block diagram
+//  Render:  dot -Tpdf 01_system.dot -o 01_system.pdf
+// ===========================================================================
+digraph qml_system {
+    rankdir=TB;
+    labelloc="t";
+    label=<<FONT POINT-SIZE="20"><B>QML Hardware Accelerator — Top-Level RTL Block Diagram</B></FONT><BR/>
+           <FONT POINT-SIZE="11">state-vector engine · module connectivity with signal names and bus widths</FONT><BR/> >;
+    fontname="Helvetica";
+    graph [fontname="Helvetica", nodesep=0.5, ranksep=0.7, splines=true, compound=true, bgcolor="white"];
+    node  [fontname="Helvetica", fontsize=11, shape=box, style="filled,rounded", penwidth=1.4, margin="0.16,0.10"];
+    edge  [fontname="Helvetica", fontsize=9.5, arrowsize=0.8, color="#33475b"];
+
+    // ---------------- primary I/O -----------------------------------------
+    io_in  [label="PRIMARY INPUTS\ngo · mode · grad_addr[7:0] · nq[3:0]\nclk · rst_n",
+            fillcolor="#e8eef5", color="#33475b"];
+    io_out [label="PRIMARY OUTPUTS\nbusy · done\nresult_q28[31:0]  =  E  or  ∂⟨O⟩/∂θ",
+            fillcolor="#e8eef5", color="#33475b"];
+
+    // ================= CONTROL PLANE ======================================
+    subgraph cluster_ctrl {
+        label=<<B>CONTROL PLANE</B>>;
+        style="rounded,dashed"; color="#b5762a"; fontcolor="#8a5a1f"; fontsize=15; margin=16;
+
+        psr  [label="PARAMETER-SHIFT CONTROLLER\n(top FSM ‘pst’)\ncaptures E₊,E₋ · grad=(E₊−E₋)»1",
+              fillcolor="#f6d9ad", color="#b5762a"];
+        seq  [label="SEQUENCER / DECODER\n(FSM ‘rst_s’)\nfetch · decode · drive",
+              fillcolor="#fdf1e0", color="#b5762a"];
+        imem [label="INSTRUCTION ROM  (imem)\n64-bit × IDEPTH", fillcolor="#fdf1e0", color="#b5762a"];
+        pmem [label="PARAMETER RAM  (pmem)\n16-bit × PDEPTH · Q4.12", fillcolor="#fdf1e0", color="#b5762a"];
+        ovr  [label="OVERRIDE ADDER  Σ\npmem[a] + (±π/2 if grad)", fillcolor="#fdf1e0", color="#b5762a", shape=box];
+    }
+
+    // ================= DATAPATH ===========================================
+    subgraph cluster_dp {
+        label=<<B>DATAPATH   (fixed-point Q1.14 complex)</B>>;
+        style="rounded,dashed"; color="#2f7a55"; fontcolor="#256a48"; fontsize=15; margin=16;
+
+        subgraph cluster_gg {
+            label=<<B>gate_gen</B>  (opcode → matrix)>;
+            style="rounded"; color="#2f7a55"; fontcolor="#256a48"; fontsize=12;
+            cordic [label="CORDIC\n16-stage pipeline\nangle Q4.12 → cos/sin Q1.14", fillcolor="#ffffff", color="#6b7c93"];
+            coeff  [label="COEFFICIENT ASSEMBLER\nfixed-gate ROM + build-from-cos/sin\n→ m1q[127:0], m2q[511:0]", fillcolor="#ffffff", color="#6b7c93"];
+        }
+        subgraph cluster_core {
+            label=<<B>qpu_core</B>  (state-vector engine, FSM ‘st’)>;
+            style="rounded"; color="#2f7a55"; fontcolor="#256a48"; fontsize=12;
+            addr  [label="ADDRESS GENERATOR\n1Q pair i0,i1 · 2Q quad q00..q11\ncontrol-mask gating", fillcolor="#ffffff", color="#6b7c93"];
+            smem  [label="STATE-VECTOR MEMORY\nsr,si[15:0] × 2ⁿ · Q1.14\nin-place update", fillcolor="#e2efe8", color="#2f7a55"];
+            mac   [label="COMPLEX-MAC ARRAY\nu_bf0,u_bf1 (2×2) · u_r0..u_r3 (4×4)\n4 cmul+acc · 1 round · sat", fillcolor="#ffffff", color="#6b7c93"];
+            expu  [label="EXPECTATION ⟨Z⟩ UNIT\nΣ (−1)^parity·|amp|²\n→ exp_q28[31:0]", fillcolor="#ffffff", color="#6b7c93"];
+        }
+    }
+
+    // ---------------- edges ------------------------------------------------
+    io_in -> psr [lhead=cluster_ctrl];
+
+    psr -> seq [label="run_start, mode", color="#b5762a", fontcolor="#8a5a1f"];
+    seq -> imem [label="pc[7:0]"];
+    imem -> seq [label="iw[63:0]"];
+    seq -> pmem [label="pidx→a0,a1,a2"];
+    pmem -> ovr [label="θ[15:0]"];
+    psr -> ovr [label="ovr_en, ovr_addr, ±π/2", color="#b5762a", fontcolor="#8a5a1f", constraint=false];
+
+    ovr -> cordic [label="p0,p1,p2[15:0]", color="#2f7a55"];
+    seq -> coeff [label="op[7:0], gg_start", lhead=cluster_gg];
+    seq -> addr  [label="cmd_op,qA,qB,mask,cmd_start", lhead=cluster_core];
+
+    cordic -> coeff [label="cos/sin"];
+    coeff -> mac [label="m1q[127:0] / m2q[511:0]", color="#2f7a55", lhead=cluster_core];
+
+    addr -> smem [label="R/W addr"];
+    smem -> mac  [label="a0,a1 / b0..b3", color="#2f7a55", dir=both];
+    mac -> smem  [label="|ψ'⟩ writeback", color="#2f7a55", constraint=false];
+    smem -> expu [label="amps"];
+
+    expu -> seq [label="exp_q28 → meas_reg", color="#2f7a55", fontcolor="#256a48", constraint=false];
+    seq -> psr  [label="meas_reg (E₊/E₋)", color="#b5762a", fontcolor="#8a5a1f", constraint=false];
+    psr -> io_out [label="result_q28, busy, done"];
+}

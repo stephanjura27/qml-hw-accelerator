@@ -1,0 +1,75 @@
+// ===========================================================================
+//  qpu_core datapath  (rtl/qpu_core.v) - gate application + measurement
+// ===========================================================================
+digraph qpu_core {
+    rankdir=TB;
+    labelloc="t";
+    label=<<FONT POINT-SIZE="18"><B>qpu_core — State-Vector Datapath</B></FONT><BR/>
+           <FONT POINT-SIZE="10">1-qubit butterfly · 2-qubit 4×4 kernel · ⟨Z⟩ expectation · one amplitude(-quad) per clock</FONT><BR/> >;
+    fontname="Helvetica";
+    graph [fontname="Helvetica", nodesep=0.45, ranksep=0.55, bgcolor="white", splines=true, compound=true];
+    node  [fontname="Helvetica", fontsize=10, shape=box, style="filled,rounded", fillcolor="#ffffff", color="#6b7c93", penwidth=1.3, margin="0.14,0.09"];
+    edge  [fontname="Helvetica", fontsize=9, arrowsize=0.75, color="#33475b"];
+
+    // control / coeffs in
+    coef [label="matrix coeffs from gate_gen\nm1q[127:0]  (2×2)   ·   m2q[511:0]  (4×4)", fillcolor="#e2efe8", color="#2f7a55"];
+    cmd  [label="command from sequencer\ncmd_op · cmd_qa · cmd_qb · cmd_mask · nq · cmd_start", fillcolor="#fdf1e0", color="#b5762a"];
+
+    // memory + address
+    smem [label="STATE-VECTOR MEMORY\nsr[15:0] , si[15:0]  ×  2ⁿ  (Q1.14)", fillcolor="#e2efe8", color="#2f7a55", width=4];
+    ag   [label="ADDRESS GENERATOR  (counter cnt, mask gating)\l 1Q:  i0 = idx&~tbit ,  i1 = i0|tbit\l 2Q:  q00,q01,q10,q11  (abit,bbit)\l gate active when (idx & mask)==mask\l"];
+
+    // 1Q datapath
+    subgraph cluster_1q {
+        label=<<B>1-qubit kernel</B>  (S_1Q)>; style="rounded"; color="#2f7a55"; fontcolor="#256a48";
+        rd1 [label="read  a0=ψ[i0] , a1=ψ[i1]", fillcolor="#f4f7fa"];
+        bf0 [label="cmac u_bf0\nn0 = U00·a0 + U01·a1"];
+        bf1 [label="cmac u_bf1\nn1 = U10·a0 + U11·a1"];
+        wr1 [label="write  ψ[i0]=n0 , ψ[i1]=n1", fillcolor="#f4f7fa"];
+    }
+
+    // 2Q datapath
+    subgraph cluster_2q {
+        label=<<B>2-qubit kernel</B>  (S_2Q)>; style="rounded"; color="#2f7a55"; fontcolor="#256a48";
+        rd2 [label="read  b0..b3 = ψ[q00,q01,q10,q11]", fillcolor="#f4f7fa"];
+        r0  [label="cmac u_r0 :  m0 = Σ U0j·bj"];
+        r1  [label="cmac u_r1 :  m1 = Σ U1j·bj"];
+        r2  [label="cmac u_r2 :  m2 = Σ U2j·bj"];
+        r3  [label="cmac u_r3 :  m3 = Σ U3j·bj"];
+        wr2 [label="write  ψ[q00..q11] = m0..m3", fillcolor="#f4f7fa"];
+    }
+
+    // expectation
+    subgraph cluster_meas {
+        label=<<B>expectation</B>  (S_MEAS)>; style="rounded"; color="#2f7a55"; fontcolor="#256a48";
+        mag [label="magsq = re² + im²  (Q2.28)"];
+        par [label="parity = ^(idx & mask)"];
+        acc [label="acc += parity ? −magsq : +magsq"];
+        eo  [label="exp_q28[31:0]  =  ⟨⊗Z⟩  (Q4.28)", fillcolor="#e2efe8", color="#2f7a55"];
+    }
+
+    // reset
+    rst [label="RESET (S_RESET)\nψ = |0…0⟩", fillcolor="#f4f7fa"];
+
+    // edges
+    cmd -> ag;
+    ag -> smem [label="R/W addr", dir=both];
+    coef -> bf0; coef -> bf1;
+    coef -> r0; coef -> r1; coef -> r2; coef -> r3;
+
+    smem -> rd1 [label="1Q"];
+    rd1 -> bf0; rd1 -> bf1;
+    bf0 -> wr1; bf1 -> wr1; wr1 -> smem [constraint=false, color="#2f7a55", label="|ψ'⟩"];
+
+    smem -> rd2 [label="2Q"];
+    rd2 -> r0; rd2 -> r1; rd2 -> r2; rd2 -> r3;
+    r0 -> wr2; r1 -> wr2; r2 -> wr2; r3 -> wr2; wr2 -> smem [constraint=false, color="#2f7a55", label="|ψ'⟩"];
+
+    smem -> mag [label="MEAS"]; mag -> acc; par -> acc; acc -> eo;
+    smem -> rst [style=invis];
+
+    // FSM note
+    fsm [shape=note, fillcolor="#fff8e6", color="#b5762a",
+         label="control FSM ‘st’\l S_IDLE → { S_1Q | S_2Q | S_MEAS | S_RESET } → S_DONE\l decode by cmd_op:\l  0x01–0x15 → 1Q · 0x20–0x26 → 2Q\l  0x30 → MEAS · 0xF0 → RESET\l"];
+    { rank=same; ag; fsm; }
+}

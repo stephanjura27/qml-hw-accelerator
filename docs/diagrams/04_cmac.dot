@@ -1,0 +1,45 @@
+// ===========================================================================
+//  cmac - complex multiply-accumulate cell  (rtl/cmac.v)
+// ===========================================================================
+digraph cmac {
+    rankdir=TB;
+    labelloc="t";
+    label=<<FONT POINT-SIZE="18"><B>cmac — Complex Multiply-Accumulate Cell</B></FONT><BR/>
+           <FONT POINT-SIZE="10">out = Σⱼ Mⱼ·Aⱼ  (j=0..3) · full-width products · single rounding · saturating</FONT><BR/> >;
+    fontname="Helvetica";
+    graph [fontname="Helvetica", nodesep=0.4, ranksep=0.5, bgcolor="white", splines=true];
+    node  [fontname="Helvetica", fontsize=10, shape=box, style="filled,rounded", fillcolor="#ffffff", color="#6b7c93", penwidth=1.3, margin="0.13,0.08"];
+    edge  [fontname="Helvetica", fontsize=9, arrowsize=0.7, color="#33475b"];
+
+    subgraph cluster_in {
+        label="inputs (Q1.14)"; style="rounded,dashed"; color="#6b7c93";
+        m [label="M0..M3  (mr, mi)\nmatrix row coeffs", fillcolor="#e2efe8", color="#2f7a55"];
+        a [label="A0..A3  (ar, ai)\nread amplitudes", fillcolor="#e2efe8", color="#2f7a55"];
+    }
+
+    // 4 complex multipliers
+    subgraph cluster_mul {
+        label="4 complex multipliers  (16×16 → 32-bit, Q2.28)"; style="rounded"; color="#33475b";
+        p0 [label="prⱼ = mrⱼ·arⱼ − miⱼ·aiⱼ\npiⱼ = mrⱼ·aiⱼ + miⱼ·arⱼ"];
+        p1 [label="(j = 1)"];
+        p2 [label="(j = 2)"];
+        p3 [label="(j = 3)"];
+    }
+
+    accr [label="Σ real  →  accr[39:0]  (Q2.28)", fillcolor="#eef3f8", color="#33475b"];
+    acci [label="Σ imag  →  acci[39:0]  (Q2.28)", fillcolor="#eef3f8", color="#33475b"];
+
+    rnd  [label="round:  (acc + 2¹³) » 14   →  Q1.14", fillcolor="#fdf1e0", color="#b5762a"];
+    sat  [label="saturate to signed 16-bit  [−32768, 32767]", fillcolor="#fdf1e0", color="#b5762a"];
+    out  [label="outr[15:0] , outi[15:0]   (Q1.14)", fillcolor="#e8eef5", color="#33475b"];
+
+    m -> p0; m -> p1; m -> p2; m -> p3;
+    a -> p0; a -> p1; a -> p2; a -> p3;
+    p0 -> accr; p1 -> accr; p2 -> accr; p3 -> accr;
+    p0 -> acci; p1 -> acci; p2 -> acci; p3 -> acci;
+    accr -> rnd; acci -> rnd; rnd -> sat -> out;
+
+    note [shape=note, fillcolor="#fff8e6", color="#b5762a",
+          label="Instantiations:\l 1-qubit butterfly → 2 active terms\l   (u_bf0 = row0, u_bf1 = row1)\l 2-qubit 4×4 → 4 active terms\l   (u_r0 … u_r3 = rows 0..3)\l unused terms fed Mⱼ = 0\l"];
+    { rank=same; rnd; note; }
+}

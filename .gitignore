@@ -1,0 +1,10 @@
+# build / simulation artifacts
+sim/
+*.vvp
+**/vectors/
+# python
+__pycache__/
+*.pyc
+*.npz
+# scratch
+docs/_preview.png
