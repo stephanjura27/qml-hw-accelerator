@@ -34,6 +34,7 @@ set covers the whole design at increasing detail:
 | `docs/diagrams/03_qpu_core`| state-vector datapath: 1Q butterfly, 2Q 4×4 kernel, ⟨Z⟩ unit |
 | `docs/diagrams/04_cmac`    | complex multiply-accumulate cell (the arithmetic core) |
 | `docs/diagrams/05_fsm`     | the four control FSMs (PSR, sequencer, gate_gen, qpu_core) |
+| `docs/diagrams/06_components` | hardware component inventory per module (regs, multipliers, muxes, memories) |
 
 Each is provided as `.png`, `.pdf` (vector, for LaTeX/print) and `.svg`, plus a
 combined `docs/qml_diagrams.pdf`. Regenerate them with:
@@ -280,3 +281,79 @@ port to map onto block-RAM.
 quantum evolution deterministically in classical hardware, which is exactly what
 QML training and inference need on today's hardware. It is not a controller for
 physical qubits.
+
+---
+
+## 10. Hardware components (building blocks)
+
+This is the concrete inventory of what the RTL instantiates — the memories,
+registers, arithmetic units, muxes, counters and state machines — for the
+default 5‑qubit configuration (`DW=16`, `STATE_AW=5`).
+
+### Memories (RAM / ROM)
+
+| Memory | Where | Size | Purpose |
+|---|---|---|---|
+| `imem` (instruction ROM) | top | 64‑bit × 256 = 16.4 kbit | the circuit program |
+| `pmem` (parameter RAM) | top | 16‑bit × 64 = 1.0 kbit | the angles (Q4.12) |
+| `sr`, `si` (state memory) | qpu_core | 16‑bit × 32, two banks = 1.0 kbit | complex amplitudes (re, im) |
+| `atan` table | cordic | 16 × 32‑bit constants | arctan(2⁻ⁱ) lookup |
+| fixed‑gate coefficients | gate_gen | constants | X,Y,Z,H,S,T,√X,SWAP… matrices |
+
+### Registers (flip‑flops)
+
+| Register(s) | Where | Width | Role |
+|---|---|---|---|
+| `xr`,`yr`,`zr` pipeline | cordic | 17 × 32‑bit each | CORDIC stage registers (x, y, angle) |
+| `fr`,`vr` pipeline | cordic | 17 × 1‑bit each | sign‑flip flag, valid flag |
+| `cosv`,`sinv` | cordic | 16‑bit each | rotation outputs |
+| `op_r`, `ang[0:3]`, `cc[0:3]`, `ss[0:3]` | gate_gen | 8 + 4×16 + 8×16 | opcode latch, angles, cos/sin store |
+| `cd_angle`, `k` | gate_gen | 16‑bit, 3‑bit | CORDIC feed, call index |
+| `cnt` | qpu_core | 6‑bit | amplitude sweep counter |
+| `acc` | qpu_core | 48‑bit | expectation accumulator |
+| `exp_q28` | qpu_core | 32‑bit | measurement result (Q4.28) |
+| `pc` | top | 8‑bit | program counter |
+| `cur_op/qa/qb/mask/pidx` | top | 8+4+4+16+16 | decoded instruction latch |
+| `meas_reg`, `e_plus`, `e_minus`, `result_q28` | top | 32‑bit each | captured E, E₊, E₋, output |
+| `ovr_en/addr/delta` | top | 1+8+16 | parameter‑shift override |
+
+Total ≈ **2,300 flip‑flops**, dominated by the 17‑stage CORDIC pipeline
+(~1,700 FFs). State memory adds ~1 kbit if mapped to registers (or one BRAM).
+
+### Arithmetic units
+
+| Unit | Count | Where |
+|---|---|---|
+| signed 16×16 multiplier | **96** (16 per MAC × 6 MAC cells) + **2** (measurement re², im²) | cmac, qpu_core |
+| adders / subtractors | ~100 total: MAC accumulate (6/cell × 6), CORDIC per‑stage add/sub (3 × 16) + reduction (3), expectation acc, override adders (3), gradient subtractor | cmac, cordic, qpu_core, top |
+| fixed shifters (barrel) | CORDIC stage shifts (2 × 16), input «16, output »14, round »14, gradient »1 | cordic, cmac, top |
+| rounding + saturation | on every MAC output and CORDIC output | cmac, cordic |
+
+The **6 `cmac` cells** are the arithmetic core: `u_bf0`,`u_bf1` do the 1‑qubit
+butterfly (2×2), and `u_r0…u_r3` do the 2‑qubit kernel (4×4). Each cmac = 16
+multipliers + an adder tree + one rounding/saturating stage.
+
+### Multiplexers
+
+| Mux | Where | Selects |
+|---|---|---|
+| add/sub direction | cordic (×16 stages) | sign of the angle register `z` |
+| argument‑reduction direction | cordic (×3) | angle vs ±π/2 |
+| gate‑matrix select | gate_gen | opcode → constants **or** cos/sin‑built coefficients (8 fields for 2×2, 32 for 4×4) |
+| read‑index mux | qpu_core | 1‑qubit pair `i0,i1` vs 2‑qubit quad `q00..q11` |
+| write‑back mux | qpu_core | which addresses get updated (1Q / 2Q / reset) |
+| parameter‑override mux | top (×3) | `pmem[a]` vs `pmem[a]+shift` when `a == ovr_addr` |
+| result select | top | forward E vs gradient `(E₊−E₋)»1` |
+
+### Counters, comparators, FSMs
+
+- **Counters:** `cnt` (amplitude index, in the address generator), `pc` (program counter), `k` (CORDIC‑call index).
+- **Comparators:** loop end (`cnt+1 ≥ 2ⁿ`), control‑mask match (`(idx & mask)==mask`), override address match, CORDIC saturation bounds.
+- **Parity tree:** `^(idx & mask)` — an XOR reduction that gives the ±sign in the expectation sum.
+- **State machines (4):** `st` (qpu_core, 6 states), `fst` (gate_gen, 4), `rst_s` (sequencer, 8), `pst` (parameter‑shift controller, 6).
+
+### One‑line resource summary
+
+≈ **98 multipliers · ~100 adders · ~2,300 flip‑flops · ~18.4 kbit memory · 6 MAC
+cells · 4 FSMs · 3 counters**, for the 5‑qubit build. Memory scales as `2ⁿ`;
+the multiplier/adder/FSM counts do **not** change with qubit count.

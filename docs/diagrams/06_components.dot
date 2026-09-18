@@ -1,0 +1,107 @@
+// ===========================================================================
+//  Hardware component inventory per module  (5-qubit build)
+//  Render: dot -Tpdf 06_components.dot -o 06_components.pdf
+// ===========================================================================
+digraph components {
+    rankdir=TB;
+    labelloc="t";
+    label=<<FONT POINT-SIZE="20"><B>Hardware Components per Module</B></FONT><BR/>
+           <FONT POINT-SIZE="11">what the RTL instantiates — memories, registers, multipliers, muxes, counters, FSMs (5-qubit build)</FONT><BR/> >;
+    fontname="Helvetica";
+    graph [fontname="Helvetica", nodesep=0.5, ranksep=0.7, bgcolor="white", splines=true, compound=true];
+    node  [fontname="Helvetica", shape=plaintext];
+    edge  [fontname="Helvetica", fontsize=9, arrowsize=0.8, color="#33475b", fontcolor="#33475b"];
+
+    // ---------------- CONTROL PLANE --------------------------------------
+    subgraph cluster_ctrl {
+        label=<<B>CONTROL PLANE</B>>; style="rounded,dashed"; color="#b5762a"; fontcolor="#8a5a1f"; fontsize=14; margin=14;
+
+        top [label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+            <TR><TD BGCOLOR="#f6d9ad" COLSPAN="2"><B>qml_accelerator&#160;&#160;(top / sequencer + PSR)</B></TD></TR>
+            <TR><TD ALIGN="LEFT">Instruction ROM  <FONT COLOR="#666666">imem</FONT></TD><TD>64-bit × 256</TD></TR>
+            <TR><TD ALIGN="LEFT">Parameter RAM  <FONT COLOR="#666666">pmem</FONT></TD><TD>16-bit × 64</TD></TR>
+            <TR><TD ALIGN="LEFT">Program counter  <FONT COLOR="#666666">pc</FONT></TD><TD>8-bit counter</TD></TR>
+            <TR><TD ALIGN="LEFT">Instruction latch  <FONT COLOR="#666666">cur_*</FONT></TD><TD>op/qa/qb/mask/pidx</TD></TR>
+            <TR><TD ALIGN="LEFT">Result registers</TD><TD>meas_reg, E₊, E₋, result — 32-bit ×4</TD></TR>
+            <TR><TD ALIGN="LEFT">Override adders (±π/2)</TD><TD>3 adders + 3 compare-muxes</TD></TR>
+            <TR><TD ALIGN="LEFT">Gradient path</TD><TD>subtractor + »1 shift</TD></TR>
+            <TR><TD ALIGN="LEFT">Sequencer FSM  <FONT COLOR="#666666">rst_s</FONT></TD><TD>8 states</TD></TR>
+            <TR><TD ALIGN="LEFT">Param-shift FSM  <FONT COLOR="#666666">pst</FONT></TD><TD>6 states</TD></TR>
+          </TABLE>>];
+    }
+
+    // ---------------- DATAPATH -------------------------------------------
+    subgraph cluster_dp {
+        label=<<B>DATAPATH</B>>; style="rounded,dashed"; color="#2f7a55"; fontcolor="#256a48"; fontsize=14; margin=14;
+
+        gategen [label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+            <TR><TD BGCOLOR="#cfe6d9" COLSPAN="2"><B>gate_gen&#160;&#160;(opcode → matrix)</B></TD></TR>
+            <TR><TD ALIGN="LEFT">Opcode latch  <FONT COLOR="#666666">op_r</FONT></TD><TD>8-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">Angle regs  <FONT COLOR="#666666">ang[0:3]</FONT></TD><TD>4 × 16-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">cos/sin store  <FONT COLOR="#666666">cc,ss</FONT></TD><TD>8 × 16-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">Coefficient qmul</TD><TD>1 multiplier (U2/U3)</TD></TR>
+            <TR><TD ALIGN="LEFT">Fixed-gate ROM</TD><TD>constants (X,H,S,T,SWAP…)</TD></TR>
+            <TR><TD ALIGN="LEFT">Matrix-select mux</TD><TD>8 fields (2×2) + 32 (4×4)</TD></TR>
+            <TR><TD ALIGN="LEFT">Call counter  <FONT COLOR="#666666">k</FONT></TD><TD>3-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">FSM  <FONT COLOR="#666666">fst</FONT></TD><TD>4 states</TD></TR>
+          </TABLE>>];
+
+        cordic [label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+            <TR><TD BGCOLOR="#dfeff6" COLSPAN="2"><B>cordic&#160;&#160;(cos/sin engine)</B></TD></TR>
+            <TR><TD ALIGN="LEFT">Pipeline x,y,z  <FONT COLOR="#666666">xr,yr,zr</FONT></TD><TD>17 × 32-bit each</TD></TR>
+            <TR><TD ALIGN="LEFT">Flags  <FONT COLOR="#666666">fr,vr</FONT></TD><TD>17 × 1-bit each</TD></TR>
+            <TR><TD ALIGN="LEFT">arctan ROM</TD><TD>16 × 32-bit constants</TD></TR>
+            <TR><TD ALIGN="LEFT">Per-stage add/sub</TD><TD>3 × 16 stages</TD></TR>
+            <TR><TD ALIGN="LEFT">Per-stage shifters</TD><TD>2 × 16 stages</TD></TR>
+            <TR><TD ALIGN="LEFT">Sign muxes</TD><TD>16 (one per stage)</TD></TR>
+            <TR><TD ALIGN="LEFT">Arg-reduce + round/sat</TD><TD>3 add/sub + rounding</TD></TR>
+            <TR><TD ALIGN="LEFT"><I>no multipliers — shift/add only</I></TD><TD></TD></TR>
+          </TABLE>>];
+
+        qpu [label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+            <TR><TD BGCOLOR="#cfe6d9" COLSPAN="2"><B>qpu_core&#160;&#160;(state-vector engine)</B></TD></TR>
+            <TR><TD ALIGN="LEFT">State memory  <FONT COLOR="#666666">sr, si</FONT></TD><TD>16-bit × 32, ×2 banks</TD></TR>
+            <TR><TD ALIGN="LEFT">Sweep counter  <FONT COLOR="#666666">cnt</FONT></TD><TD>6-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">Accumulator  <FONT COLOR="#666666">acc</FONT></TD><TD>48-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">Expectation out  <FONT COLOR="#666666">exp_q28</FONT></TD><TD>32-bit</TD></TR>
+            <TR><TD ALIGN="LEFT">MAC cells</TD><TD>6 × cmac (see below)</TD></TR>
+            <TR><TD ALIGN="LEFT">Measurement |amp|²</TD><TD>2 multipliers + adder</TD></TR>
+            <TR><TD ALIGN="LEFT">Parity tree</TD><TD>XOR reduction</TD></TR>
+            <TR><TD ALIGN="LEFT">Read / write-back muxes</TD><TD>1Q pair / 2Q quad select</TD></TR>
+            <TR><TD ALIGN="LEFT">FSM  <FONT COLOR="#666666">st</FONT></TD><TD>6 states</TD></TR>
+          </TABLE>>];
+
+        cmac [label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+            <TR><TD BGCOLOR="#dfeff6" COLSPAN="2"><B>cmac&#160;&#160;(×6 instances)</B></TD></TR>
+            <TR><TD ALIGN="LEFT">Signed multipliers</TD><TD>16 × (16×16-bit)</TD></TR>
+            <TR><TD ALIGN="LEFT">Adder tree</TD><TD>real + imag accumulate</TD></TR>
+            <TR><TD ALIGN="LEFT">Round + saturate</TD><TD>Q2.28 → Q1.14</TD></TR>
+            <TR><TD ALIGN="LEFT"><I>u_bf0,u_bf1 (2×2)</I></TD><TD><I>u_r0…u_r3 (4×4)</I></TD></TR>
+          </TABLE>>];
+    }
+
+    // ---------------- summary --------------------------------------------
+    summary [label=<
+      <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+        <TR><TD BGCOLOR="#33475b" COLSPAN="2"><FONT COLOR="white"><B>TOTAL (5-qubit build)</B></FONT></TD></TR>
+        <TR><TD ALIGN="LEFT">Multipliers (16×16)</TD><TD><B>≈ 98</B>  (16×6 MAC + 2)</TD></TR>
+        <TR><TD ALIGN="LEFT">Adders / subtractors</TD><TD>≈ 100</TD></TR>
+        <TR><TD ALIGN="LEFT">Flip-flops</TD><TD>≈ 2,300  (CORDIC ≈ 1,700)</TD></TR>
+        <TR><TD ALIGN="LEFT">Memory</TD><TD>≈ 18.4 kbit</TD></TR>
+        <TR><TD ALIGN="LEFT">MAC cells · FSMs · counters</TD><TD>6 · 4 · 3</TD></TR>
+        <TR><TD ALIGN="LEFT"><I>scales with qubits (2ⁿ)</I></TD><TD><I>only the memories</I></TD></TR>
+      </TABLE>>];
+
+    // ---------------- hierarchy edges ------------------------------------
+    top     -> gategen [label="drives", lhead=cluster_dp, ltail=cluster_ctrl];
+    gategen -> cordic  [label="instantiates"];
+    top     -> qpu     [style=invis];
+    qpu     -> cmac    [label="instantiates ×6"];
+    qpu     -> summary [style=invis];
+    cmac    -> summary [style=invis];
+}

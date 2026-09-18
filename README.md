@@ -1,144 +1,111 @@
 # QML Hardware Accelerator
 
-A small **Verilog** design that runs the math of **quantum machine learning
-(QML)** directly in hardware — the quantum gates, the rotations, the
-measurements, and the gradients used to train quantum models. It is verified
-against an independent simulator and used to train a real classifier
-end‑to‑end, entirely on the accelerator.
+This is a chip design (written in Verilog) that does the math behind **quantum
+machine learning** directly in hardware — running quantum circuits *and* training
+them — instead of on a normal computer.
 
-> **In one line:** a *"quantum-math co-processor."* You hand it a quantum circuit
-> as a list of instructions; it computes the result **and** the training
-> gradients in hardware.
+You give it a circuit (a list of steps). It runs the circuit, gives you the
+answer, and can even work out the gradients you need to train the model. All of
+that happens inside the hardware.
 
 ![architecture](docs/architecture.png)
 
----
+## What does it actually do?
 
-## The idea in 60 seconds
+A quantum register of *n* qubits is really just a list of 2ⁿ numbers. Everything
+below is a concrete thing the chip does to that list.
 
-A quantum computer with **n qubits** is described by a list of **2ⁿ complex
-numbers** (the "amplitudes"). Everything quantum is just linear algebra on that
-list, and each piece maps to a hardware block:
+**1. Reset** — set the register back to the start (all zeros).
 
-| Quantum thing | What it really is | How the hardware does it |
-|---|---|---|
-| **A gate** (X, H, CNOT, …) | multiply the list by a small matrix | complex multiply‑accumulate (`cmac`) |
-| **A rotation** RX/RY/RZ(θ) | needs cos(θ/2), sin(θ/2) | **CORDIC** (shift‑and‑add, no lookup tables) |
-| **A measurement** ⟨Z⟩ | a weighted sum of \|amplitude\|² | the expectation unit |
-| **A gradient** ∂⟨O⟩/∂θ | run twice at θ±π/2, subtract, ÷2 | the **parameter‑shift** controller |
+**2. Apply a gate.** This is the main job. A gate changes one or two qubits by
+mixing the numbers in the list. The chip knows:
 
-That last row is the important one for machine learning: the **parameter‑shift
-rule** gives *exact* gradients for training, and the chip computes them itself —
-no backprop, no external simulator.
+- **Flips & basics:** `X` (a NOT), `Y`, `Z`, and `H` (puts a qubit into a 50/50 superposition).
+- **Fixed phase gates:** `S`, `T`, `√X` and their inverses.
+- **Rotations by an angle θ — these are the trainable "knobs":** `RX`, `RY`, `RZ`,
+  plus the general `U2`/`U3`. To turn a knob it needs the sine and cosine of the
+  angle, which it computes with a **CORDIC** (only shifts and adds — no big tables).
+- **Two-qubit gates that entangle qubits:** `CNOT` (flip B only if A is 1), `CZ`,
+  `SWAP`, `iSWAP`, and the Ising gates `RXX/RYY/RZZ/RZX` used in most quantum-ML circuits.
+- **A "controlled" version of anything:** add *"only do this if these qubits are 1"* —
+  that gives you `Toffoli`, `Fredkin`, controlled rotations, etc., with no extra hardware.
 
----
+**3. Measure.** Ask *"what's the average value of this qubit?"* — a number between
+−1 and +1 (written ⟨Z⟩). That number is the model's output / prediction.
 
-## What operations it supports
+**4. Get a gradient (for training).** To know how to improve a knob θ, the chip
+uses the **parameter-shift rule**: run the same circuit twice — once with θ + 90°,
+once with θ − 90° — and subtract. That difference *is* the exact gradient. No
+backpropagation, no outside help — the chip does both runs and the subtraction itself.
 
-**Single‑qubit gates:** `I, X, Y, Z, H, S, S†, T, T†, √X, √X†`
-**Rotations (trainable):** `RX, RY, RZ, P(λ), U2, U3` — the full parameterized set
-**Two‑qubit gates:** `CNOT, CZ, CY, CH, SWAP, iSWAP, √SWAP`, Ising `RXX, RYY, RZZ, RZX`
-**Multi‑controlled:** `Toffoli (CCX)`, `Fredkin (CSWAP)` — via a control mask
-**QML operations:** data encoding (angle/feature maps), entangling layers,
-expectation value ⟨O⟩ for any Pauli observable, and **parameter‑shift gradients**.
+That's the whole toolbox. Anything in quantum machine learning — encoding your
+data, entangling layers, measuring a cost, training the knobs — is built out of
+these few operations.
 
-Everything reduces to two generic hardware primitives — a **1‑qubit (2×2) kernel
-with a control mask** and a **2‑qubit (4×4) kernel** — which is what makes it
-general: it runs *any* variational quantum circuit, not one fixed model.
-
----
-
-## How it works — the flow
+## What happens in one run
 
 Follow the picture above, left to right:
 
-1. **Load** the circuit as a *program* (a list of 64‑bit instructions) and the
-   *angles* into two on‑chip memories.
-2. The **sequencer** reads one instruction at a time and decodes it (which gate,
-   which qubits, which parameter).
-3. For a gate, the **gate generator** builds its matrix — using the **CORDIC**
-   to get the sine/cosine for rotations.
-4. The **QPU core** applies that matrix to the amplitude list (the "butterfly"
-   update), or, for a measurement, sums up \|amplitude\|² to produce ⟨Z⟩.
-5. To **train**, the **parameter‑shift controller** runs the circuit twice
-   (angle +π/2 and −π/2) and outputs the gradient `(E₊ − E₋)/2`.
+1. You load the **circuit** (the list of instructions) and the **angles** into two small memories.
+2. A **sequencer** reads the instructions one at a time.
+3. For each gate, a **gate builder** makes its little matrix (using the CORDIC for rotations).
+4. The **core** applies that matrix to the list of numbers — or, for a measurement, adds up the right numbers to get ⟨Z⟩.
+5. For training, a **parameter-shift controller** does the two shifted runs and hands you the gradient.
 
-Numbers are fixed‑point (amplitudes `Q1.14`, angles `Q4.12`). Deeper detail —
-module ports, FSMs, precision analysis — is in **[ARCHITECTURE.md](ARCHITECTURE.md)**
-and the diagrams in `docs/diagrams/`.
+## Does it work?
 
----
+Yes — and it's checked two ways.
 
-## Does it actually work?
+**Every piece is verified** against a plain Python simulator: the rotations, every
+single gate, 11 known circuits (Bell state, Toffoli, SWAP, …) and 40 random
+circuits. They all agree to about 0.0005 — essentially exact for 16-bit hardware.
 
-**Verified.** An independent numpy simulator checks every part: the CORDIC (254
-angles), every gate's matrix (29), 11 hand‑built circuits (Bell, Toffoli, SWAP,
-U3, gradients…), and 40 random circuits. All match to **< 6×10⁻⁴**.
-
-**It trains a real model.** A variational quantum classifier trained on the real
-**Iris** dataset — with *every forward value and every gradient produced by the
-Verilog RTL* — reaches **100% train / 100% test** accuracy. The gradients the
-hardware produced match the reference to `5.9×10⁻⁴`.
+**It trains a real model.** I trained a small quantum classifier on the real
+**Iris** flower dataset, with *every value and every gradient coming from the
+Verilog*, and it reached **100% accuracy**.
 
 ![training](docs/vqc_training.png)
 
-**It matches classical ML.** On the same task, against a linear model and a small
-neural net — the hardware‑trained quantum classifier ties them, with the fewest
-trainable parameters:
+**It holds up against classical ML.** On the same task it ties a logistic
+regression and a small neural net — using the fewest trained parameters:
 
-| Model | Trainable params | Test acc | How it is trained |
-|---|---|---|---|
-| **Variational Quantum Classifier (this hardware)** | **4** | **100%** | parameter‑shift gradients on RTL |
-| Logistic Regression (linear) | 3 | 100% | sklearn |
-| Neural Net MLP 2‑6‑1 (nonlinear) | 25 | 100% | backprop (sklearn) |
+| Model | Trained parameters | Test accuracy |
+|---|---|---|
+| **Quantum classifier (this chip)** | **4** | **100%** |
+| Logistic regression | 3 | 100% |
+| Small neural net | 25 | 100% |
 
 ![quantum vs classical](docs/quantum_vs_classical.png)
 
-*(Iris setosa vs versicolor is linearly separable, so all three reach 100%. The
-point here is that the accelerator trains a correct model end‑to‑end; the three
-boundaries differ in shape because the quantum model works in a different feature
-space.)*
-
----
-
 ## Run it
 
-Needs `iverilog` (Icarus Verilog ≥ 11) and `python3` + `numpy`
-(plus `matplotlib` + `scikit‑learn` for the training/comparison demos).
+You need `iverilog` and Python with `numpy` (plus `matplotlib` and `scikit-learn`
+for the two demos).
 
 ```bash
-git clone <your-repo-url> && cd qml-hw-accelerator
-
-bash run_all.sh                       # 1) verify everything (CORDIC, gates, circuits, fuzz)
-bash train.sh                         # 2) train the quantum classifier on the accelerator (~80 s)
-cd model && python3 compare_classical.py   # 3) quantum vs classical comparison
+bash run_all.sh                            # check everything works
+bash train.sh                              # train the quantum classifier on the chip (~80 s)
+cd model && python3 compare_classical.py   # quantum vs classical
 ```
 
-Or with `make`: `make test`, `make train`.
-
----
-
-## Repo layout
+## What's in here
 
 ```
-rtl/    the hardware (Verilog)
-        qml_defs.vh · cordic.v · cmac.v · gate_gen.v · qpu_core.v · qml_accelerator.v
-tb/     testbenches (cordic, gate generator, system, batch training runner)
-model/  numpy reference + tests + the quantum classifier & classical comparison
-docs/   diagrams (Graphviz) + result figures
-ARCHITECTURE.md   the detailed technical write-up
-run_all.sh · train.sh · Makefile
+rtl/    the hardware itself (Verilog)
+tb/     the tests
+model/  the Python reference, the quantum classifier, the classical comparison
+docs/   the diagrams and the result pictures
+ARCHITECTURE.md   the deep technical version, if you want every detail
 ```
 
----
+## Want the details?
 
-## Deep dive
+**[ARCHITECTURE.md](ARCHITECTURE.md)** has the full breakdown — every module, the
+number formats, the state machines, a **complete hardware component inventory**
+(memories, registers, multipliers, muxes, counters, FSMs), and notes for putting
+it on a real FPGA. The `docs/diagrams/` folder has six diagrams (system, CORDIC,
+core, MAC cell, state machines, and a component inventory).
 
-**[ARCHITECTURE.md](ARCHITECTURE.md)** has the full story: microarchitecture,
-instruction format, fixed‑point precision analysis, the finite‑state machines,
-and synthesis notes. The `docs/diagrams/` folder has five Graphviz diagrams
-(system, CORDIC, QPU core, MAC cell, FSMs) as PNG/PDF/SVG.
-
-*Scope: this is a state‑vector accelerator — it runs quantum‑ML math
-deterministically in classical hardware (what QML training needs today). It is
-not a controller for physical qubits.*
+*What this is: a "state-vector" accelerator — it runs quantum-ML math exactly, in
+regular hardware, which is what training and running quantum models needs today.
+It's not a controller for physical qubits.*
